@@ -1,18 +1,19 @@
 import os
-import numpy as np
 import argparse
+import numpy as np
 import json
 import torch
 from torch import nn
 from torch.autograd import Variable
 import random
 import copy
+import logging
 from glob import glob
 
 from data import PretrainDataset
 from tokenizer import SentencepieceTokenizer
 from model.utils import gen_attention_mask, get_lr
-from model.modeling_electra import  BertModel
+from model.modeling_electra import BertModel
 from model.modeling_electra import ElectraForPretrain
 from metrics import calc_mask_accuracy, calc_gan_accuracy
 from optimizer import AdamW
@@ -42,15 +43,23 @@ parser.add_argument("--dis_weight", default=40, type=float)
 parser.add_argument("--mask_prob", default=0.2, type=float)
 parser.add_argument("--cls_prob", default=0.0, type=float)
 parser.add_argument("--generation_type", default='bert', type=str)
+parser.add_argument("--rezero", action="store_true")
+parser.add_argument("--bert", action="store_true")
 
 args = parser.parse_args()
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+stream_hander = logging.StreamHandler()
+stream_hander.setFormatter(formatter)
+logger.addHandler(stream_hander)
 
 torch.cuda.set_device(args.local_rank)
 
 # FOR DISTRIBUTED:  Initialize the backend.  torch.distributed.launch will provide
 # environment variables, and requires that you use init_method=`env://`.
-torch.distributed.init_process_group(backend='nccl',
-                                         init_method='env://')
+torch.distributed.init_process_group(backend='nccl', init_method='env://')
 
 torch.backends.cudnn.benchmark = True
 
@@ -58,6 +67,16 @@ torch.backends.cudnn.benchmark = True
 tokenizer = SentencepieceTokenizer(model_path = args.tokenizer)
 
 ## Define Pretrained model
+if args.bert:
+    from model.modeling_electra import BertModel
+    from model.modeling_electra import ElectraForPretrain
+    logger.info("load reZero Electra")
+elif args.rezero:
+    from model.modeling_electra import BertModel
+    from model.modeling_electra import ElectraForPretrain
+    logger.info("load BERT Electra")
+else:
+    assert("please selete the model type")
 model = ElectraForPretrain(args.config).cuda()
 
 ##Define loss function
@@ -145,7 +164,7 @@ def train(data_loader, model, gen_loss, dis_loss, optimizer, params, step_num, s
         is_replaced_accuracy = calc_gan_accuracy(active_logits_pred, active_labels)
         
         if args.local_rank == 0 and step_num % 20 == 0:
-            print("step:{} gen_loss:{} dis_loss:{} masked_acc:{} is_replaced_acc:{} lr:{}".format(step_num, masked_lm_loss.item(), args.dis_weight * is_replaced_loss.item(), masked_lm_accuracy, is_replaced_accuracy, get_lr(optimizer), 3))
+            logger.info("step:{} gen_loss:{} dis_loss:{} masked_acc:{} is_replaced_acc:{} lr:{}".format(step_num, masked_lm_loss.item(), args.dis_weight * is_replaced_loss.item(), masked_lm_accuracy, is_replaced_accuracy, get_lr(optimizer), 3))
             sw.add_scalar('loss/masked_lm_loss', masked_lm_loss.item(), global_step=step_num)
             sw.add_scalar('loss/is_replaced_loss', args.dis_weight * is_replaced_loss.item(), global_step=step_num)
             sw.add_scalar('loss/total_loss', total_loss.item(), global_step=step_num)
@@ -154,7 +173,7 @@ def train(data_loader, model, gen_loss, dis_loss, optimizer, params, step_num, s
             sw.add_scalar('learning_rate', get_lr(optimizer), global_step=step_num)
             
             if step_num % args.save_interval == 0:
-                print("save the current model")
+                logger.info("save the current model")
                 torch.save({
                         'step': step_num,
                         'optimizer_state_dict': optimizer.state_dict()
@@ -164,7 +183,7 @@ def train(data_loader, model, gen_loss, dis_loss, optimizer, params, step_num, s
                         'step': step_num,
                         'model_state_dict': model.module.state_dict()
                         }, '{}/electra_step_{}_loss{}.pth'.format(model_dir, step_num, round(total_loss.item(), 3)))
-                print("finish save")
+                logger.info("finish save")
 
         with amp.scale_loss(total_loss, optimizer) as scaled_loss:
             scaled_loss.backward()
@@ -175,7 +194,7 @@ def train(data_loader, model, gen_loss, dis_loss, optimizer, params, step_num, s
 
 file_list = glob(os.path.join(args.input_path,'*'))
 data_iter = iter(file_list)
-print("total {} files are loaded..".format(len(file_list)))
+logger.info("total {} files are loaded..".format(len(file_list)))
 
 ## Defie loop dataloader
 e = 0
@@ -185,7 +204,7 @@ data_iter = iter(file_list)
 while True:
     try:
         file = next(data_iter)
-        print("step {} file list {}".format(step_num, file))
+        logger.info("step {} file list {}".format(step_num, file))
 
         dataset = PretrainDataset(file, tok=tokenizer, max_len=args.max_len, mask_prob=args.mask_prob,
                                   cls_prob=args.cls_prob, generation_type=args.generation_type)
@@ -196,5 +215,5 @@ while True:
         if step_num == args.training_step:
             break
     except StopIteration:
-        print("update file list")
+        logger.info("update file list")
         data_iter = iter(file_list)
