@@ -48,6 +48,8 @@ parser.add_argument("--bert", action="store_true")
 
 args = parser.parse_args()
 
+print("REZERO :{}".format(args.rezero))
+print("BERT :{}".format(args.bert))
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -70,11 +72,11 @@ tokenizer = SentencepieceTokenizer(model_path = args.tokenizer)
 if args.bert:
     from model.modeling_electra import BertModel
     from model.modeling_electra import ElectraForPretrain
-    logger.info("load reZero Electra")
+    logger.info("load BERT Electra")
 elif args.rezero:
     from model.modeling_electra import BertModel
     from model.modeling_electra import ElectraForPretrain
-    logger.info("load BERT Electra")
+    logger.info("load reZERO Electra")
 else:
     assert("please selete the model type")
 model = ElectraForPretrain(args.config).cuda()
